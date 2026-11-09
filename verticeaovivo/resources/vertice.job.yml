@@ -1,0 +1,104 @@
+# Job vertice_farol: a Torre de Controle da Vértice, toda segunda às 6h (America/Sao_Paulo).
+# São 7 tarefas:
+#   1. ingestao_feriados    (notebook) BrasilAPI → bronze.feriados
+#   2. ingestao_data_lake   (notebook) Supabase Storage (boto3) → volume bronze.raw → as 9 tabelas bronze
+#      (1 e 2 rodam em paralelo)
+#   3. conferencia_bronze   (sql_task) confere as 9 tabelas contra a contagem esperada
+#   4. medalhao             (pipeline) vertice_medalhao: silver ×7 → gold ×3
+#   5. testes_de_qualidade  (sql_task) os 10 testes da silver e da gold
+#   6. status_com_ia        (sql_task) o texto do status vira coluna (gold.status_estruturado)
+#      (5 e 6 rodam em paralelo, depois do medalhão)
+#   7. metricas_governadas  (sql_task) a metric view gold.mv_projetos (a fórmula de cada KPI)
+# As chaves do data lake chegam por ${var.…}: o valor fica em
+# .databricks/bundle/dev/variable-overrides.json, fora do Git.
+resources:
+  jobs:
+    vertice_farol:
+      name: vertice_farol
+      tasks:
+        - task_key: ingestao_feriados
+          disabled: false
+          email_notifications: {}
+          notebook_task:
+            notebook_path: ../src/ingestao/01_ingestao_api.ipynb
+            source: WORKSPACE
+          run_if: ALL_SUCCESS
+          timeout_seconds: 0
+          webhook_notifications: {}
+        - task_key: ingestao_data_lake
+          disabled: false
+          email_notifications: {}
+          notebook_task:
+            base_parameters:
+              AWS_ACCESS_KEY_ID: ${var.s3_access_key_id}
+              AWS_DEFAULT_REGION: us-east-1
+              AWS_SECRET_ACCESS_KEY: ${var.s3_secret_access_key}
+              S3_ENDPOINT: https://zdewpvgeijebjyerkpip.storage.supabase.co/storage/v1/s3
+            notebook_path: ../src/ingestao/02_boto3.ipynb
+            source: WORKSPACE
+          run_if: ALL_SUCCESS
+          timeout_seconds: 0
+          webhook_notifications: {}
+
+        # Confere as 9 tabelas da bronze contra a contagem esperada (seed 42).
+        - task_key: conferencia_bronze
+          depends_on:
+            - task_key: ingestao_feriados
+            - task_key: ingestao_data_lake
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file:
+              path: ../src/conferencia/00-conferencia-bronze.sql
+              source: WORKSPACE
+
+        # Silver e gold no pipeline declarativo.
+        - task_key: medalhao
+          depends_on:
+            - task_key: conferencia_bronze
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.vertice_medalhao.id}
+
+        # Os 10 testes de qualidade da silver e da gold.
+        - task_key: testes_de_qualidade
+          depends_on:
+            - task_key: medalhao
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file:
+              path: ../src/testes/testes.sql
+              source: WORKSPACE
+
+        # O texto livre do status vira coluna (IA só nos últimos 90 dias com bloqueio).
+        - task_key: status_com_ia
+          depends_on:
+            - task_key: medalhao
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file:
+              path: ../src/ia/status_estruturado.sql
+              source: WORKSPACE
+
+        # As fórmulas dos KPIs num lugar só (metric view), depois dos testes e da IA.
+        - task_key: metricas_governadas
+          depends_on:
+            - task_key: testes_de_qualidade
+            - task_key: status_com_ia
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file:
+              path: ../src/metricas/metricas.sql
+              source: WORKSPACE
+
+      email_notifications:
+        no_alert_for_skipped_runs: false
+      # uma execução por vez: duas ao mesmo tempo apagariam a bronze uma da outra
+      max_concurrent_runs: 1
+      performance_target: PERFORMANCE_OPTIMIZED
+      queue:
+        enabled: true
+      # toda segunda às 6h. No dev, o preset trigger_pause_status deixa pausado.
+      schedule:
+        quartz_cron_expression: 0 0 6 ? * MON
+        timezone_id: America/Sao_Paulo
+      timeout_seconds: 0
+      webhook_notifications: {}

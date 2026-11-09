@@ -1,0 +1,44 @@
+# Bundle da Torre de Controle da Vértice (Projeto Farol).
+# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
+bundle:
+  name: vertice
+  uuid: fc037d68-5a8d-4a82-b4af-2e56ba2c1715
+
+include:
+  - resources/*.yml
+
+# O app minha-torre/ é um bundle próprio (com node_modules): fica fora do deploy do vertice.
+sync:
+  exclude:
+    - "minha-torre/**"
+
+variables:
+  catalog:
+    description: Catálogo do lakehouse (bronze, silver e gold)
+    default: lakehouse_vertice
+  warehouse_id:
+    description: SQL warehouse das sql_task (Serverless Starter Warehouse)
+    default: 0ad776a2600c97ee
+  s3_access_key_id:
+    description: chave do data lake (o valor fica fora do Git)
+  s3_secret_access_key:
+    description: chave do data lake (o valor fica fora do Git)
+
+targets:
+  dev:
+    # Sem mode: development (ele prefixaria os nomes com [dev usuario]).
+    # O preset só garante que nenhum agendamento ligue sozinho no dev.
+    default: true
+    presets:
+      trigger_pause_status: PAUSED
+    workspace:
+      host: https://dbc-9c225327-280c.cloud.databricks.com
+  prod:
+    mode: production
+    workspace:
+      host: https://dbc-9c225327-280c.cloud.databricks.com
+      # We explicitly deploy to /Workspace/Users/jackas123@gmail.com to make sure we only have a single copy.
+      root_path: /Workspace/Users/jackas123@gmail.com/.bundle/${bundle.name}/${bundle.target}
+    permissions:
+      - user_name: jackas123@gmail.com
+        level: CAN_MANAGE
